@@ -1,0 +1,1612 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+<title>TK Training</title>
+<script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
+<style>
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { margin: 0; padding: 0; background: #f7f7f5; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; -webkit-font-smoothing: antialiased; }
+  button { font-family: inherit; }
+  input, select, textarea { font-family: inherit; }
+  input::-webkit-outer-spin-button, input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+  input[type=number] { -moz-appearance: textfield; }
+  @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+  @keyframes fadeIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
+  @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel" data-presets="react">
+const { useState, useEffect, useRef, useCallback } = React;
+
+/* ============================================================
+ * CONFIG — แก้ API_URL ตรงนี้หลัง deploy Apps Script เป็น Web App
+ * ============================================================ */
+const CONFIG = {
+  API_URL: "https://script.google.com/macros/s/AKfycbwTrG4grPO6aJL1n9dq4LtWEsYRjZMDBUfEl_Ghaur_AVDahQYnkm05hQ3Sgf8vPygy/exec",
+};
+
+/* ============================================================
+ * API Client
+ * ============================================================ */
+async function apiGet(action, payload) {
+  let url = CONFIG.API_URL + "?action=" + encodeURIComponent(action);
+  if (payload) url += "&payload=" + encodeURIComponent(JSON.stringify(payload));
+  const res = await fetch(url, { method: "GET" });
+  const json = await res.json();
+  if (!json.ok) throw new Error(json.error || "เกิดข้อผิดพลาดไม่ทราบสาเหตุ");
+  return json.data;
+}
+
+async function apiPost(action, payload) {
+  const res = await fetch(CONFIG.API_URL, {
+    method: "POST",
+    body: JSON.stringify({ action: action, payload: payload || {} }),
+  });
+  const json = await res.json();
+  if (!json.ok) throw new Error(json.error || "เกิดข้อผิดพลาดไม่ทราบสาเหตุ");
+  return json.data;
+}
+
+// คิวรอเมื่อบันทึกไม่สำเร็จ (กันข้อมูลหายตอนเน็ตหลุด) — เก็บใน memory ระหว่าง session
+function usePendingQueue() {
+  const [pending, setPending] = useState([]);
+  const addPending = (label, retryFn) => {
+    const id = Date.now() + Math.random();
+    setPending((p) => [...p, { id, label, retryFn }]);
+    return id;
+  };
+  const removePending = (id) => setPending((p) => p.filter((x) => x.id !== id));
+  return { pending, addPending, removePending };
+}
+
+/* ============================================================
+ * Design tokens
+ * ============================================================ */
+const C = {
+  bg: "#f7f7f5",
+  card: "#ffffff",
+  border: "#ececec",
+  text: "#18181b",
+  textMuted: "#71717a",
+  textFaint: "#a1a1aa",
+  green: "#22c55e",
+  blue: "#3b82f6",
+  orange: "#f59e0b",
+  purple: "#a855f7",
+  cyan: "#06b6d4",
+  red: "#ef4444",
+  amber: "#f59e0b",
+};
+
+const DAY_TYPE_COLOR = { weight: "#3b82f6", cardio: "#06b6d4" };
+const STATUS_LABEL = {
+  completed: "ซ้อมแล้ว",
+  partial: "ซ้อมบางส่วน",
+  skipped: "ข้าม",
+  postponed: "เลื่อน",
+};
+const STATUS_COLOR = {
+  completed: "#22c55e",
+  partial: "#f59e0b",
+  skipped: "#a1a1aa",
+  postponed: "#3b82f6",
+};
+
+/* ============================================================
+ * Toast (success / error feedback after save)
+ * ============================================================ */
+function Toast({ toasts, onDismiss }) {
+  if (toasts.length === 0) return null;
+  return (
+    <div style={{ position: "fixed", top: 16, left: 16, right: 16, zIndex: 1000, display: "flex", flexDirection: "column", gap: 8, maxWidth: 430, margin: "0 auto" }}>
+      {toasts.map((t) => (
+        <div
+          key={t.id}
+          onClick={() => onDismiss(t.id)}
+          style={{
+            background: t.type === "error" ? "#fef2f2" : "#f0fdf4",
+            border: `1px solid ${t.type === "error" ? "#fecaca" : "#bbf7d0"}`,
+            color: t.type === "error" ? "#b91c1c" : "#15803d",
+            padding: "12px 16px", borderRadius: 12, fontSize: 13, fontWeight: 600,
+            animation: "fadeIn 0.2s ease", cursor: "pointer",
+            boxShadow: "0 4px 12px rgba(0,0,0,0.08)",
+          }}
+        >
+          {t.message}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function useToasts() {
+  const [toasts, setToasts] = useState([]);
+  const push = (message, type) => {
+    const id = Date.now() + Math.random();
+    setToasts((t) => [...t, { id, message, type: type || "success" }]);
+    setTimeout(() => setToasts((t) => t.filter((x) => x.id !== id)), 3500);
+  };
+  const dismiss = (id) => setToasts((t) => t.filter((x) => x.id !== id));
+  return { toasts, push, dismiss };
+}
+
+/* ============================================================
+ * Loading / Empty / Error states
+ * ============================================================ */
+function LoadingScreen({ label }) {
+  return (
+    <div style={{ minHeight: "100vh", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 14, color: C.textMuted }}>
+      <div style={{
+        width: 28, height: 28, borderRadius: "50%",
+        border: `3px solid ${C.border}`, borderTopColor: C.text,
+        animation: "spin 0.7s linear infinite",
+      }} />
+      <div style={{ fontSize: 13 }}>{label || "กำลังโหลด..."}</div>
+    </div>
+  );
+}
+
+function InlineSpinner({ size }) {
+  const s = size || 16;
+  return (
+    <div style={{
+      width: s, height: s, borderRadius: "50%",
+      border: `2px solid rgba(255,255,255,0.4)`, borderTopColor: "#fff",
+      animation: "spin 0.6s linear infinite", display: "inline-block",
+    }} />
+  );
+}
+
+function ErrorBanner({ message, onRetry }) {
+  return (
+    <div style={{
+      margin: "16px 24px", padding: "14px 16px", borderRadius: 12,
+      background: "#fef2f2", border: "1px solid #fecaca", color: "#b91c1c",
+    }}>
+      <div style={{ fontSize: 13, fontWeight: 600, marginBottom: onRetry ? 8 : 0 }}>{message}</div>
+      {onRetry && (
+        <button onClick={onRetry} style={{
+          background: "#b91c1c", color: "#fff", border: "none", borderRadius: 8,
+          padding: "6px 14px", fontSize: 12, fontWeight: 600, cursor: "pointer",
+        }}>
+          ลองใหม่
+        </button>
+      )}
+    </div>
+  );
+}
+
+function SetupNotice() {
+  return (
+    <div style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", padding: 32 }}>
+      <div style={{ maxWidth: 380, textAlign: "center" }}>
+        <div style={{ fontSize: 40, marginBottom: 16 }}>⚙️</div>
+        <div style={{ fontSize: 18, fontWeight: 800, marginBottom: 8, color: C.text }}>ยังไม่ได้ตั้งค่า API</div>
+        <div style={{ fontSize: 13, color: C.textMuted, lineHeight: 1.6 }}>
+          เปิดไฟล์นี้ด้วยโปรแกรมแก้ไขข้อความ แล้วแก้ค่า <code style={{ background: "#f4f4f5", padding: "2px 6px", borderRadius: 4 }}>CONFIG.API_URL</code> ให้เป็น Web App URL ที่ได้จากการ Deploy Google Apps Script
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ============================================================
+ * Back header — ใช้ซ้ำหลายหน้า
+ * ============================================================ */
+function BackHeader({ title, eyebrow, onBack, right }) {
+  return (
+    <div style={{
+      padding: "max(env(safe-area-inset-top), 24px) 24px 20px", borderBottom: `1px solid ${C.border}`,
+      display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12,
+      position: "sticky", top: 0, background: C.bg, zIndex: 10,
+    }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+        {onBack && (
+          <button onClick={onBack} aria-label="ย้อนกลับ" style={{ background: "none", border: "none", color: C.textMuted, fontSize: 22, cursor: "pointer", padding: 0, lineHeight: 1 }}>←</button>
+        )}
+        <div>
+          {eyebrow && <div style={{ fontSize: 11, letterSpacing: 3, color: C.textFaint, textTransform: "uppercase", marginBottom: 4 }}>{eyebrow}</div>}
+          <div style={{ fontSize: 22, fontWeight: 800, color: C.text }}>{title}</div>
+        </div>
+      </div>
+      {right}
+    </div>
+  );
+}
+
+function Card({ children, style }) {
+  return (
+    <div style={{ background: C.card, borderRadius: 14, border: `1px solid ${C.border}`, ...style }}>
+      {children}
+    </div>
+  );
+}
+
+function PrimaryButton({ children, onClick, color, disabled, loading, style }) {
+  return (
+    <button
+      onClick={onClick}
+      disabled={disabled || loading}
+      style={{
+        width: "100%", padding: "18px 0", borderRadius: 16, border: "none",
+        background: disabled ? C.border : (color || C.text), color: disabled ? C.textFaint : "#ffffff",
+        fontSize: 17, fontWeight: 700, cursor: disabled || loading ? "default" : "pointer",
+        display: "flex", alignItems: "center", justifyContent: "center", gap: 10,
+        transition: "opacity 0.15s", opacity: loading ? 0.8 : 1,
+        ...style,
+      }}
+    >
+      {loading && <InlineSpinner />}
+      {children}
+    </button>
+  );
+}
+
+/* ============================================================
+ * Home Screen
+ * ============================================================ */
+function HomeScreen({ onNavigate, toast }) {
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+  const [program, setProgram] = useState(null);
+  const [nextWorkout, setNextWorkout] = useState(null);
+  const [todayNutrition, setTodayNutrition] = useState(null);
+  const [todayCardio, setTodayCardio] = useState([]);
+  const [todayWorkoutStatus, setTodayWorkoutStatus] = useState(null);
+  const [checkinDue, setCheckinDue] = useState(false);
+
+  const todayKey = useThaiToday();
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const [activeProgram, next, nutrition, cardio, history, checkedIn] = await Promise.all([
+        apiGet("getActiveProgram"),
+        apiGet("getNextWorkout").catch(() => null),
+        apiGet("getNutritionByDate", { date: todayKey }).catch(() => null),
+        apiGet("getCardioByDate", { date: todayKey }).catch(() => []),
+        apiGet("getHistory", { days: 1 }).catch(() => ({ workouts: [] })),
+        apiGet("hasCheckedInThisWeek").catch(() => true),
+      ]);
+      setProgram(activeProgram);
+      setNextWorkout(next);
+      setTodayNutrition(nutrition);
+      setTodayCardio(cardio || []);
+      const todayLog = (history.workouts || []).find((w) => (w.datePerformed || w.datePlanned) === todayKey);
+      setTodayWorkoutStatus(todayLog ? todayLog.status : null);
+      setCheckinDue(!checkedIn);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  }, [todayKey]);
+
+  useEffect(() => { load(); }, [load]);
+
+  if (loading) return <LoadingScreen label="กำลังโหลดข้อมูลจาก Google Sheet..." />;
+  if (error) return (
+    <div>
+      <BackHeader eyebrow="TK TRAINING" title="หน้าหลัก" />
+      <ErrorBanner message={"โหลดข้อมูลไม่สำเร็จ: " + error} onRetry={load} />
+    </div>
+  );
+
+  const totalCardioMin = todayCardio.reduce((sum, c) => sum + (Number(c.minutes) || 0), 0);
+  const dayColor = nextWorkout && nextWorkout.day
+    ? (DAY_TYPE_COLOR[nextWorkout.day.dayType] || C.text)
+    : C.text;
+
+  return (
+    <div style={{ minHeight: "100vh", paddingBottom: 40 }}>
+      <div style={{ padding: "max(env(safe-area-inset-top), 24px) 24px 16px", borderBottom: `1px solid ${C.border}` }}>
+        <div style={{ fontSize: 11, letterSpacing: 3, color: C.textFaint, textTransform: "uppercase", marginBottom: 6 }}>
+          TK TRAINING
+        </div>
+        <div style={{ fontSize: 26, fontWeight: 800, letterSpacing: -0.5, color: C.text }}>
+          <ThaiDateDisplay />
+        </div>
+        {program && (
+          <div style={{ fontSize: 12, color: C.textMuted, marginTop: 6 }}>
+            {program.programName} · {program.phaseName}
+          </div>
+        )}
+      </div>
+
+      {/* Next Workout Queue Card */}
+      <div style={{ padding: "20px 24px 0" }}>
+        {nextWorkout && nextWorkout.day ? (
+          <Card style={{ padding: 20, borderLeft: `4px solid ${dayColor}` }}>
+            <div style={{ fontSize: 11, letterSpacing: 2, color: C.textFaint, textTransform: "uppercase", marginBottom: 8 }}>
+              คิวซ้อมถัดไป
+            </div>
+            <div style={{ fontSize: 24, fontWeight: 900, color: C.text, marginBottom: 4 }}>
+              {nextWorkout.day.dayName}
+            </div>
+            <div style={{ fontSize: 13, color: C.textMuted, marginBottom: 14 }}>
+              {nextWorkout.exercises.length} ท่า · ~{nextWorkout.day.expectedDurationMin} นาที · {nextWorkout.day.targetMuscle}
+            </div>
+            {todayWorkoutStatus && (
+              <div style={{
+                display: "inline-flex", alignItems: "center", gap: 6, padding: "4px 10px",
+                borderRadius: 20, background: STATUS_COLOR[todayWorkoutStatus] + "18",
+                color: STATUS_COLOR[todayWorkoutStatus], fontSize: 12, fontWeight: 700, marginBottom: 14,
+              }}>
+                วันนี้: {STATUS_LABEL[todayWorkoutStatus]}
+              </div>
+            )}
+            <PrimaryButton color={dayColor} onClick={() => onNavigate("workout", { dayOrder: nextWorkout.day.dayOrder })}>
+              เริ่มซ้อม {nextWorkout.day.dayName} →
+            </PrimaryButton>
+            <button
+              onClick={() => onNavigate("changeDay", { programId: program.programId })}
+              style={{ width: "100%", marginTop: 10, padding: "10px 0", background: "none", border: "none", color: C.textMuted, fontSize: 13, cursor: "pointer", fontWeight: 600 }}
+            >
+              เปลี่ยนวันซ้อมเอง
+            </button>
+          </Card>
+        ) : (
+          <Card style={{ padding: 24, textAlign: "center" }}>
+            <div style={{ fontSize: 14, color: C.textMuted, marginBottom: 4 }}>ไม่มีโปรแกรมที่ active</div>
+            <div style={{ fontSize: 12, color: C.textFaint }}>ไปตั้งค่าใน Program_Master บน Google Sheet</div>
+          </Card>
+        )}
+      </div>
+
+      {/* Today summary */}
+      <div style={{ padding: "16px 24px 0", display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+        <SummaryChip label="โปรตีนวันนี้" value={todayNutrition && todayNutrition.protein ? todayNutrition.protein + "g" : "—"} color={C.purple} />
+        <SummaryChip label="คาร์ดิโอวันนี้" value={totalCardioMin > 0 ? totalCardioMin + " นาที" : "—"} color={C.cyan} />
+      </div>
+
+      {checkinDue && (
+        <div style={{ padding: "12px 24px 0" }}>
+          <button onClick={() => onNavigate("checkin")} style={{
+            width: "100%", textAlign: "left", padding: "12px 16px", borderRadius: 12,
+            background: "#fffbeb", border: "1px solid #fde68a", color: "#92400e",
+            fontSize: 12.5, fontWeight: 600, cursor: "pointer", display: "flex", alignItems: "center", gap: 8,
+          }}>
+            <span>⏰</span> สัปดาห์นี้ยังไม่ได้ Weekly Check-in — กรอกตอนนี้เลย
+          </button>
+        </div>
+      )}
+
+      {/* Quick actions */}
+      <div style={{ padding: "24px 24px 0" }}>
+        <div style={{ fontSize: 11, letterSpacing: 2, color: C.textFaint, textTransform: "uppercase", marginBottom: 12 }}>
+          เมนู
+        </div>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+          <MenuTile emoji="🥗" label="บันทึกอาหาร" onClick={() => onNavigate("nutrition")} />
+          <MenuTile emoji="🏃" label="คาร์ดิโอ" onClick={() => onNavigate("cardio")} />
+          <MenuTile emoji="⚖️" label="Weekly Check-in" onClick={() => onNavigate("checkin")} />
+          <MenuTile emoji="📊" label="Dashboard" onClick={() => onNavigate("dashboard")} />
+          <MenuTile emoji="📋" label="ประวัติ" onClick={() => onNavigate("history")} />
+          <MenuTile emoji="💬" label="Export for ChatGPT" onClick={() => onNavigate("export")} highlight />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function SummaryChip({ label, value, color }) {
+  return (
+    <Card style={{ padding: "12px 14px", borderLeft: `3px solid ${color}` }}>
+      <div style={{ fontSize: 10, color: C.textFaint, textTransform: "uppercase", letterSpacing: 1, marginBottom: 4 }}>{label}</div>
+      <div style={{ fontSize: 17, fontWeight: 800, color: C.text }}>{value}</div>
+    </Card>
+  );
+}
+
+function MenuTile({ emoji, label, onClick, highlight }) {
+  return (
+    <button onClick={onClick} style={{
+      padding: "16px 12px", borderRadius: 14, cursor: "pointer", textAlign: "left",
+      background: highlight ? "#18181b" : C.card,
+      border: `1px solid ${highlight ? "#18181b" : C.border}`,
+      display: "flex", flexDirection: "column", gap: 8,
+    }}>
+      <span style={{ fontSize: 20 }}>{emoji}</span>
+      <span style={{ fontSize: 13, fontWeight: 700, color: highlight ? "#fff" : C.text }}>{label}</span>
+    </button>
+  );
+}
+
+/* ============================================================
+ * Thai date helpers (client-side display only — source of truth is server)
+ * ============================================================ */
+function useThaiToday() {
+  // ใช้ตอน query วันนี้แบบเร็ว — แสดงผลจริงให้ใช้ ThaiDateDisplay/ฝั่ง server เป็นหลัก
+  const [key, setKey] = useState(() => formatThaiDateKeyLocal());
+  useEffect(() => {
+    const t = setInterval(() => setKey(formatThaiDateKeyLocal()), 60000);
+    return () => clearInterval(t);
+  }, []);
+  return key;
+}
+
+function formatThaiDateKeyLocal() {
+  const now = new Date();
+  const thaiString = now.toLocaleString("en-US", { timeZone: "Asia/Bangkok" });
+  const d = new Date(thaiString);
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+
+function ThaiDateDisplay() {
+  const now = new Date();
+  const thaiString = now.toLocaleString("en-US", { timeZone: "Asia/Bangkok" });
+  const d = new Date(thaiString);
+  const text = d.toLocaleDateString("th-TH", { weekday: "long", day: "numeric", month: "short" });
+  return <>{text}</>;
+}
+
+/* ============================================================
+ * Workout Screen
+ * ============================================================ */
+function WorkoutScreen({ params, onBack, onDone, toast }) {
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+  const [program, setProgram] = useState(null);
+  const [day, setDay] = useState(null);
+  const [exercises, setExercises] = useState([]); // มี lastPerformance + suggestion ติดมาจาก backend แล้ว
+  const [exIdx, setExIdx] = useState(0);
+  const [setLogs, setSetLogs] = useState({}); // { exerciseOrder: [ {actualReps, weightKg, RPE, note, setNumber, completed} ] }
+  const [usingAlt, setUsingAlt] = useState({}); // { exerciseOrder: true }
+  const [setNumber, setSetNumber] = useState(1); // เซ็ตปัจจุบันของท่าที่กำลังทำ
+  const [resting, setResting] = useState(false);
+  const [restLeft, setRestLeft] = useState(0);
+  const [showDone, setShowDone] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const [startTime] = useState(() => getThaiTimeNow());
+  const [weightInput, setWeightInput] = useState("");
+  const timerRef = useRef(null);
+
+  useEffect(() => {
+    (async () => {
+      setLoading(true);
+      setError(null);
+      try {
+        const activeProgram = await apiGet("getActiveProgram");
+        let dayOrder = params && params.dayOrder;
+        let dayData, exData;
+        if (dayOrder) {
+          const result = await apiGet("getWorkoutByDayOrder", { programId: activeProgram.programId, dayOrder });
+          dayData = result.day;
+          exData = result.exercises;
+        } else {
+          const next = await apiGet("getNextWorkout");
+          dayData = next.day;
+          exData = next.exercises;
+        }
+        setProgram(activeProgram);
+        setDay(dayData);
+        setExercises(exData);
+      } catch (err) {
+        setError(err.message);
+      } finally {
+        setLoading(false);
+      }
+    })();
+  }, [params]);
+
+  useEffect(() => {
+    if (resting && restLeft > 0) {
+      timerRef.current = setTimeout(() => setRestLeft((r) => r - 1), 1000);
+    } else if (resting && restLeft === 0) {
+      setResting(false);
+    }
+    return () => clearTimeout(timerRef.current);
+  }, [resting, restLeft]);
+
+  // ตั้งค่าน้ำหนักตั้งต้นใหม่ทุกครั้งที่เปลี่ยนท่า (ใช้ suggestion ถ้ามี ไม่งั้น defaultWeightKg)
+  useEffect(() => {
+    if (exercises.length === 0) return;
+    const ex = exercises[exIdx];
+    if (!ex) return;
+    const initial = (ex.suggestion && ex.suggestion.suggestedWeightKg && ex.suggestion.suggestedWeightKg > 0)
+      ? ex.suggestion.suggestedWeightKg
+      : (ex.defaultWeightKg && Number(ex.defaultWeightKg) > 0 ? ex.defaultWeightKg : "");
+    setWeightInput(initial);
+  }, [exIdx, exercises]);
+
+  if (loading) return <LoadingScreen label="กำลังโหลดท่าออกกำลังกาย..." />;
+  if (error) return (
+    <div>
+      <BackHeader title="เริ่มซ้อม" onBack={onBack} />
+      <ErrorBanner message={error} />
+    </div>
+  );
+  if (!exercises || exercises.length === 0) return (
+    <div>
+      <BackHeader title="เริ่มซ้อม" onBack={onBack} />
+      <ErrorBanner message="วันนี้ไม่มีท่าออกกำลังกายในโปรแกรม (ลองเช็ค Program_Exercises)" />
+    </div>
+  );
+
+  const ex = exercises[exIdx];
+  const exKey = ex.exerciseOrder;
+  const isAlt = !!usingAlt[exKey];
+  const targetSets = Number(ex.targetSets) || 3;
+  const dayColor = DAY_TYPE_COLOR[day.dayType] || C.text;
+  const isLastSet = setNumber >= targetSets;
+
+  // น้ำหนักตั้งต้นของท่านี้: ใช้ suggestion ถ้ามี ไม่งั้น fallback ไป defaultWeightKg (ถ้าเป็น 0 ให้เว้นว่าง)
+  const initialWeight = (ex.suggestion && ex.suggestion.suggestedWeightKg && ex.suggestion.suggestedWeightKg > 0)
+    ? ex.suggestion.suggestedWeightKg
+    : (ex.defaultWeightKg && Number(ex.defaultWeightKg) > 0 ? ex.defaultWeightKg : "");
+  const fixedReps = ex.repMax || ex.repMin || "";
+
+  function recordSet(weightForThisExercise) {
+    setSetLogs((prev) => {
+      const list = prev[exKey] ? [...prev[exKey]] : [];
+      const row = {
+        setNumber: setNumber,
+        actualReps: fixedReps,
+        weightKg: weightForThisExercise,
+        RPE: "",
+        note: "",
+        completed: true,
+      };
+      list.push(row);
+      return { ...prev, [exKey]: list };
+    });
+  }
+
+  function completeCurrentSet() {
+    // เซ็ตสุดท้ายของท่านี้ -> ใช้น้ำหนักที่กรอกในช่อง ส่วนเซ็ตก่อนหน้าใช้น้ำหนักแนะนำเดิม (เท่ากันทุกเซ็ต)
+    const weightToUse = isLastSet ? (weightInput || initialWeight) : initialWeight;
+    recordSet(weightToUse);
+
+    if (!isLastSet) {
+      setRestLeft(Number(ex.restSeconds) || 60);
+      setResting(true);
+      setSetNumber((n) => n + 1);
+    } else {
+      goNextExercise();
+    }
+  }
+
+  function skipRest() {
+    clearTimeout(timerRef.current);
+    setResting(false);
+    setRestLeft(0);
+  }
+
+  function jumpToExercise(idx) {
+    clearTimeout(timerRef.current);
+    setResting(false);
+    setRestLeft(0);
+    setSetNumber(1);
+    setExIdx(idx);
+  }
+
+  function goNextExercise() {
+    setResting(false);
+    setRestLeft(0);
+    setSetNumber(1);
+    if (exIdx < exercises.length - 1) {
+      setExIdx((i) => i + 1);
+    } else {
+      setShowDone(true);
+    }
+  }
+
+  function goPrevExercise() {
+    if (exIdx > 0) {
+      setExIdx((i) => i - 1);
+      setResting(false);
+      setRestLeft(0);
+      setSetNumber(1);
+    }
+  }
+
+  function skipExercise() {
+    goNextExercise();
+  }
+
+  async function handleFinish(finalStatus) {
+    setSubmitting(true);
+    try {
+      const allSets = [];
+      exercises.forEach((e) => {
+        const logs = setLogs[e.exerciseOrder] || [];
+        const exerciseName = usingAlt[e.exerciseOrder] && e.alternativeExercise ? e.alternativeExercise : e.exerciseName;
+        // ดึงข้อมูลจาก log สุดท้ายที่กรอก (เซ็ตสุดท้าย) — เป็น source of truth
+        const lastLog = logs.filter((s) => s.completed).pop();
+        if (!lastLog) return; // ข้ามท่าที่ไม่ได้กดเสร็จเลยสักเซ็ต
+        const weight = lastLog.weightKg !== undefined && lastLog.weightKg !== "" ? lastLog.weightKg : "";
+        const reps = lastLog.actualReps !== undefined && lastLog.actualReps !== "" ? lastLog.actualReps : "";
+        // ส่ง 1 แถวต่อท่า ไม่มี setNumber → backend จะ expand เป็น targetSets แถว
+        allSets.push({
+          exerciseOrder: e.exerciseOrder,
+          exerciseId: e.exerciseId,
+          exerciseName: exerciseName,
+          muscleGroup: e.muscleGroup,
+          targetSets: e.targetSets,
+          targetRepMin: e.repMin,
+          targetRepMax: e.repMax,
+          actualReps: reps,
+          weightKg: weight,
+          RPE: lastLog.RPE || "",
+          restSeconds: e.restSeconds,
+          note: lastLog.note || "",
+        });
+      });
+
+      const result = await apiPost("saveWorkoutLog", {
+        workoutData: {
+          datePerformed: getThaiDateKeyNow(),
+          datePlanned: getThaiDateKeyNow(),
+          programId: program.programId,
+          dayOrder: day.dayOrder,
+          dayName: day.dayName,
+          status: finalStatus,
+          startTime: startTime,
+          endTime: getThaiTimeNow(),
+          sets: allSets,
+        },
+      });
+
+      toast("บันทึกการซ้อมเรียบร้อย", "success");
+      onDone(result);
+    } catch (err) {
+      toast("บันทึกไม่สำเร็จ: " + err.message, "error");
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  if (showDone) {
+    return <WorkoutSummary exercises={exercises} setLogs={setLogs} usingAlt={usingAlt} dayColor={dayColor} day={day}
+      onConfirm={handleFinish} submitting={submitting} onBackToEdit={() => setShowDone(false)} />;
+  }
+
+  return (
+    <div style={{ minHeight: "100vh", paddingBottom: 24, display: "flex", flexDirection: "column" }}>
+      <div style={{ height: 4, background: C.border }}>
+        <div style={{ height: "100%", width: `${(exIdx / exercises.length) * 100}%`, background: dayColor, transition: "width 0.4s" }} />
+      </div>
+
+      <div style={{ padding: "16px 24px 0", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+        <button onClick={onBack} style={{ background: "none", border: "none", color: C.textMuted, fontSize: 13, cursor: "pointer", padding: 0, flexShrink: 0 }}>← ออก</button>
+        <div style={{ fontSize: 12, color: dayColor, fontWeight: 700, flexShrink: 0 }}>{day.dayName}</div>
+      </div>
+
+      {/* Exercise pill navigation — กดแตะท่าไหนก็ข้ามไปได้เลย */}
+      <div style={{ padding: "10px 24px 0", display: "flex", gap: 6, overflowX: "auto", WebkitOverflowScrolling: "touch", scrollbarWidth: "none" }}>
+        {exercises.map((e, i) => {
+          const isDone = !!(setLogs[e.exerciseOrder] || []).find(s => s.completed);
+          const isCurrent = i === exIdx;
+          return (
+            <button
+              key={i}
+              onClick={() => jumpToExercise(i)}
+              style={{
+                flexShrink: 0, padding: "5px 10px", borderRadius: 20,
+                border: `1.5px solid ${isCurrent ? dayColor : isDone ? C.green : C.border}`,
+                background: isCurrent ? dayColor : isDone ? C.green + "18" : C.card,
+                color: isCurrent ? "#fff" : isDone ? C.green : C.textFaint,
+                fontSize: 11, fontWeight: isCurrent ? 700 : 500, cursor: "pointer",
+                whiteSpace: "nowrap",
+              }}
+            >
+              {isDone && !isCurrent ? "✓ " : ""}{i + 1}. {e.exerciseName}
+            </button>
+          );
+        })}
+      </div>
+
+      <div style={{ flex: 1, display: "flex", flexDirection: "column", padding: "24px 24px 0", textAlign: "center" }}>
+        <div style={{ fontSize: 11, letterSpacing: 2, color: C.textFaint, textTransform: "uppercase", marginBottom: 6 }}>
+          {isAlt ? "ท่าทดแทน" : ex.muscleGroup}
+        </div>
+        <div style={{ fontSize: 24, fontWeight: 900, letterSpacing: -0.5, color: C.text, lineHeight: 1.15, marginBottom: 4 }}>
+          {isAlt && ex.alternativeExercise ? ex.alternativeExercise : ex.exerciseName}
+        </div>
+
+        {ex.alternativeExercise && (
+          <button
+            onClick={() => setUsingAlt((p) => ({ ...p, [exKey]: !p[exKey] }))}
+            style={{
+              margin: "8px auto 0", padding: "6px 14px", borderRadius: 20, border: `1px solid ${isAlt ? dayColor : C.border}`,
+              background: isAlt ? dayColor + "15" : "transparent", color: isAlt ? dayColor : C.textMuted,
+              fontSize: 11.5, fontWeight: 600, cursor: "pointer",
+            }}
+          >
+            {isAlt ? "↺ กลับไปท่าเดิม" : "🔁 เปลี่ยนเป็น: " + ex.alternativeExercise}
+          </button>
+        )}
+
+        <LastPerformanceInline exercise={ex} color={dayColor} />
+
+        {resting ? (
+          <div style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center" }}>
+            <div style={{ fontSize: 13, color: C.textFaint, marginBottom: 8 }}>พักอยู่ · เซ็ตถัดไป {setNumber}/{targetSets}</div>
+            <div style={{ fontSize: 64, fontWeight: 900, color: dayColor, letterSpacing: -2, marginBottom: 24 }}>{formatMMSS(restLeft)}</div>
+            <button onClick={skipRest} style={{ padding: "10px 28px", borderRadius: 20, border: `1px solid ${C.border}`, background: "transparent", color: C.textMuted, fontSize: 14, cursor: "pointer" }}>
+              ข้ามการพัก
+            </button>
+          </div>
+        ) : (
+          <div style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center" }}>
+            <div style={{ fontSize: 13, color: C.textFaint, marginBottom: 4 }}>เซ็ต</div>
+            <div style={{ fontSize: 56, fontWeight: 900, color: C.text, letterSpacing: -2, marginBottom: 16 }}>
+              {setNumber} <span style={{ fontSize: 24, color: C.textFaint, fontWeight: 600 }}>/ {targetSets}</span>
+            </div>
+
+            <div style={{ display: "flex", gap: 24, marginBottom: 32 }}>
+              <div>
+                <div style={{ fontSize: 11, color: C.textFaint, textTransform: "uppercase", letterSpacing: 1, marginBottom: 4 }}>เป้าหมาย</div>
+                <div style={{ fontSize: 20, fontWeight: 700, color: C.text }}>{fixedReps} ครั้ง</div>
+              </div>
+              <div style={{ width: 1, background: C.border }} />
+              <div>
+                <div style={{ fontSize: 11, color: C.textFaint, textTransform: "uppercase", letterSpacing: 1, marginBottom: 4 }}>น้ำหนัก</div>
+                <div style={{ fontSize: 20, fontWeight: 700, color: C.text }}>{isLastSet ? "—" : initialWeight + " kg"}</div>
+              </div>
+            </div>
+
+            {isLastSet && (
+              <div style={{ width: "100%", maxWidth: 220, marginBottom: 24 }}>
+                <div style={{ fontSize: 11, color: dayColor, textTransform: "uppercase", letterSpacing: 1, marginBottom: 6, fontWeight: 700 }}>
+                  เซ็ตสุดท้าย — น้ำหนักที่ใช้ (kg)
+                </div>
+                <input
+                  type="number"
+                  value={weightInput}
+                  onChange={(e) => setWeightInput(e.target.value)}
+                  style={{
+                    width: "100%", padding: "14px 0", borderRadius: 14, border: `2px solid ${dayColor}`,
+                    background: "#fff", color: C.text, fontSize: 28, fontWeight: 900, textAlign: "center",
+                    outline: "none", boxSizing: "border-box",
+                  }}
+                />
+              </div>
+            )}
+
+            <button
+              onClick={completeCurrentSet}
+              style={{
+                width: 168, height: 168, borderRadius: "50%", border: "none",
+                background: dayColor, color: "#fff", fontSize: 17, fontWeight: 800, cursor: "pointer",
+                display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center",
+              }}
+            >
+              ✓<div style={{ fontSize: 13, marginTop: 6, fontWeight: 700 }}>เสร็จเซ็ต {setNumber}</div>
+            </button>
+          </div>
+        )}
+      </div>
+
+      {!resting && (
+        <div style={{ padding: "12px 24px 8px", textAlign: "center" }}>
+          <button onClick={skipExercise} style={{ background: "none", border: "none", color: C.textFaint, fontSize: 12, cursor: "pointer", padding: "8px 16px" }}>
+            ข้ามท่านี้ →
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// แสดงผลงานครั้งล่าสุดแบบย่อ — ใช้ในหน้าซ้อมแบบเต็มจอ
+function LastPerformanceInline({ exercise, color }) {
+  const last = exercise.lastPerformance;
+  const suggestion = exercise.suggestion;
+
+  if (!last) return null;
+
+  const hasSuggestion = suggestion && suggestion.suggestedWeightKg !== null && suggestion.suggestedWeightKg > 0;
+
+  return (
+    <div style={{ display: "flex", justifyContent: "center", gap: 16, marginTop: 10, flexWrap: "wrap" }}>
+      {last.hasHistory ? (
+        <div style={{ fontSize: 11.5, color: C.textFaint }}>
+          ครั้งล่าสุด: {last.weightKg}kg × {last.reps.join("/")}
+        </div>
+      ) : null}
+      {hasSuggestion ? (
+        <div style={{ fontSize: 11.5, color: color, fontWeight: 700 }}>
+          แนะนำวันนี้: {suggestion.suggestedWeightKg} kg
+        </div>
+      ) : !last.hasHistory ? (
+        <div style={{ fontSize: 11.5, color: C.textFaint }}>ยังไม่มีประวัติ — กรอกน้ำหนักเองได้เลย</div>
+      ) : null}
+    </div>
+  );
+}
+
+function WorkoutSummary({ exercises, setLogs, usingAlt, dayColor, day, onConfirm, submitting, onBackToEdit }) {
+  const rows = exercises.map((e) => {
+    const logs = (setLogs[e.exerciseOrder] || []).filter((s) => s.completed);
+    const name = usingAlt[e.exerciseOrder] && e.alternativeExercise ? e.alternativeExercise : e.exerciseName;
+    const last = e.lastPerformance;
+    return { name, logs, target: Number(e.targetSets) || 3, last };
+  });
+  const anyLogged = rows.some((r) => r.logs.length > 0);
+
+  return (
+    <div style={{ minHeight: "100vh", padding: 24, display: "flex", flexDirection: "column" }}>
+      <div style={{ textAlign: "center", marginTop: 24, marginBottom: 24 }}>
+        <div style={{ fontSize: 48, marginBottom: 12 }}>{anyLogged ? "🎉" : "🤔"}</div>
+        <div style={{ fontSize: 22, fontWeight: 800, color: C.text }}>{anyLogged ? "สรุปการซ้อม" : "ยังไม่ได้บันทึกเซ็ตไหนเลย"}</div>
+        <div style={{ fontSize: 13, color: C.textMuted, marginTop: 4 }}>{day.dayName}</div>
+      </div>
+
+      <Card style={{ marginBottom: 24, overflow: "hidden" }}>
+        {rows.map((r, i) => (
+          <div key={i} style={{ padding: "14px 16px", borderBottom: i < rows.length - 1 ? `1px solid ${C.border}` : "none" }}>
+            <div style={{ fontSize: 14, fontWeight: 700, color: C.text, marginBottom: 4 }}>{r.name}</div>
+            {r.logs.length > 0 ? (
+              <>
+                <div style={{ fontSize: 12, color: C.textMuted }}>
+                  วันนี้: {r.logs.map((s) => `${s.weightKg}kg×${s.actualReps}`).join(" / ")} ({r.logs.length}/{r.target} เซ็ต)
+                </div>
+                {r.last && r.last.hasHistory && (
+                  <div style={{ fontSize: 11.5, color: C.textFaint, marginTop: 2 }}>
+                    ครั้งล่าสุด: {r.last.weightKg}kg × {r.last.reps.join("/")}
+                  </div>
+                )}
+              </>
+            ) : (
+              <div style={{ fontSize: 12, color: C.textFaint }}>ไม่ได้บันทึก</div>
+            )}
+          </div>
+        ))}
+      </Card>
+
+      <div style={{ marginTop: "auto", display: "flex", flexDirection: "column", gap: 10 }}>
+        <PrimaryButton color={dayColor} loading={submitting} onClick={() => onConfirm(anyLogged ? "completed" : "skipped")}>
+          {anyLogged ? "บันทึกว่าซ้อมครบ" : "บันทึกว่าข้ามวันนี้"}
+        </PrimaryButton>
+        {anyLogged && rows.some((r) => r.logs.length < r.target && r.logs.length > 0) && (
+          <button onClick={() => onConfirm("partial")} disabled={submitting} style={{
+            padding: "14px 0", borderRadius: 14, border: `1px solid ${C.border}`, background: "transparent",
+            color: C.textMuted, fontSize: 14, fontWeight: 600, cursor: "pointer",
+          }}>
+            บันทึกเป็น "ซ้อมบางส่วน" แทน
+          </button>
+        )}
+        <button onClick={() => onConfirm("postponed")} disabled={submitting} style={{
+          padding: "14px 0", borderRadius: 14, border: "none", background: "transparent",
+          color: C.textFaint, fontSize: 13, cursor: "pointer",
+        }}>
+          เลื่อนไปครั้งหน้า (คิวเดิม)
+        </button>
+        <button onClick={onBackToEdit} style={{
+          padding: "8px 0", background: "none", border: "none", color: C.textFaint, fontSize: 12, cursor: "pointer",
+        }}>
+          ← กลับไปแก้ไข
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/* ---------- time helpers for workout screen ---------- */
+function getThaiDateKeyNow() { return formatThaiDateKeyLocal(); }
+function getThaiTimeNow() {
+  const now = new Date();
+  const thaiString = now.toLocaleString("en-US", { timeZone: "Asia/Bangkok" });
+  const d = new Date(thaiString);
+  return String(d.getHours()).padStart(2, "0") + ":" + String(d.getMinutes()).padStart(2, "0");
+}
+function formatMMSS(sec) {
+  const m = Math.floor(sec / 60);
+  const s = sec % 60;
+  return `${m}:${String(s).padStart(2, "0")}`;
+}
+
+/* ============================================================
+ * Nutrition Screen
+ * ============================================================ */
+function NutritionScreen({ onBack, toast }) {
+  const todayKey = formatThaiDateKeyLocal();
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [form, setForm] = useState({
+    calories: "", protein: "", carb: "", fat: "", waterLiter: "",
+    dinnerTime: "", mealNote: "", hungerLevel: "", refluxOrCoughSymptom: "ไม่มี",
+  });
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const existing = await apiGet("getNutritionByDate", { date: todayKey });
+        if (existing) {
+          setForm({
+            calories: existing.calories || "", protein: existing.protein || "",
+            carb: existing.carb || "", fat: existing.fat || "",
+            waterLiter: existing.waterLiter || "", dinnerTime: existing.dinnerTime || "",
+            mealNote: existing.mealNote || "", hungerLevel: existing.hungerLevel || "",
+            refluxOrCoughSymptom: existing.refluxOrCoughSymptom || "ไม่มี",
+          });
+        }
+      } catch (err) { /* ไม่มีข้อมูลเดิม ไม่เป็นไร */ }
+      finally { setLoading(false); }
+    })();
+  }, []);
+
+  function set(field, value) { setForm((p) => ({ ...p, [field]: value })); }
+
+  async function handleSave() {
+    setSaving(true);
+    try {
+      await apiPost("saveNutritionLog", { nutritionData: { ...form, date: todayKey } });
+      toast("บันทึกมื้ออาหารเรียบร้อย", "success");
+      onBack();
+    } catch (err) {
+      toast("บันทึกไม่สำเร็จ: " + err.message, "error");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  if (loading) return <LoadingScreen />;
+
+  const total = (Number(form.protein) || 0) * 4 + (Number(form.carb) || 0) * 4 + (Number(form.fat) || 0) * 9;
+
+  return (
+    <div style={{ minHeight: "100vh", paddingBottom: 40 }}>
+      <BackHeader eyebrow="บันทึก" title="มื้ออาหารวันนี้" onBack={onBack} />
+      <div style={{ padding: "24px 24px 0" }}>
+        <FieldGroup label="โปรตีน (g)" color={C.blue}>
+          <NumInput value={form.protein} onChange={(v) => set("protein", v)} placeholder="0" />
+        </FieldGroup>
+        <FieldGroup label="คาร์โบไฮเดรต (g)" color={C.green}>
+          <NumInput value={form.carb} onChange={(v) => set("carb", v)} placeholder="0" />
+        </FieldGroup>
+        <FieldGroup label="ไขมัน (g)" color={C.orange}>
+          <NumInput value={form.fat} onChange={(v) => set("fat", v)} placeholder="0" />
+        </FieldGroup>
+
+        {total > 0 && (
+          <Card style={{ padding: "14px 16px", marginBottom: 18, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+            <div style={{ fontSize: 13, color: C.textMuted }}>แคลอรีจาก macro</div>
+            <div style={{ fontSize: 18, fontWeight: 800, color: C.purple }}>{total} kcal</div>
+          </Card>
+        )}
+
+        <FieldGroup label="Calories รวม (ถ้ารู้)" color={C.purple}>
+          <NumInput value={form.calories} onChange={(v) => set("calories", v)} placeholder="ไม่บังคับ" />
+        </FieldGroup>
+        <FieldGroup label="น้ำ (ลิตร)" color={C.cyan}>
+          <NumInput value={form.waterLiter} onChange={(v) => set("waterLiter", v)} placeholder="ไม่บังคับ" step="0.1" />
+        </FieldGroup>
+        <FieldGroup label="เวลามื้อเย็น" color={C.text}>
+          <input type="time" value={form.dinnerTime} onChange={(e) => set("dinnerTime", e.target.value)} style={textInputStyle} />
+        </FieldGroup>
+        <FieldGroup label="หิวระดับไหน (1-10)" color={C.text}>
+          <NumInput value={form.hungerLevel} onChange={(v) => set("hungerLevel", v)} placeholder="ไม่บังคับ" max={10} />
+        </FieldGroup>
+        <FieldGroup label="อาการไอ / กรดไหลย้อน">
+          <select value={form.refluxOrCoughSymptom} onChange={(e) => set("refluxOrCoughSymptom", e.target.value)} style={textInputStyle}>
+            {["ไม่มี", "ไอ", "เรอเปรี้ยว", "แน่นคอ", "ระคายคอ"].map((o) => <option key={o} value={o}>{o}</option>)}
+          </select>
+        </FieldGroup>
+        <FieldGroup label="บันทึกมื้ออาหาร">
+          <textarea value={form.mealNote} onChange={(e) => set("mealNote", e.target.value)} placeholder="เช่น เที่ยงกินข้าวแม่ทำ เย็นอกไก่+ข้าว"
+            rows={3} style={{ ...textInputStyle, resize: "vertical", fontWeight: 400, fontSize: 14 }} />
+        </FieldGroup>
+
+        <PrimaryButton color={C.purple} loading={saving} onClick={handleSave} style={{ marginTop: 8 }}>
+          บันทึกอาหาร
+        </PrimaryButton>
+      </div>
+    </div>
+  );
+}
+
+/* ============================================================
+ * Cardio Screen
+ * ============================================================ */
+const CARDIO_TYPES = [
+  { key: "walk", label: "เดินปกติ", emoji: "🚶" },
+  { key: "incline walk", label: "เดินชัน", emoji: "⛰️" },
+  { key: "run", label: "วิ่ง", emoji: "🏃" },
+  { key: "swim", label: "ว่ายน้ำ", emoji: "🏊" },
+  { key: "bike", label: "ปั่นจักรยาน", emoji: "🚴" },
+  { key: "other", label: "อื่นๆ", emoji: "✨" },
+];
+
+function CardioScreen({ onBack, toast }) {
+  const todayKey = formatThaiDateKeyLocal();
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [entries, setEntries] = useState([]);
+  const [type, setType] = useState("walk");
+  const [minutes, setMinutes] = useState("");
+  const [intensity, setIntensity] = useState("moderate");
+  const [distance, setDistance] = useState("");
+  const [note, setNote] = useState("");
+
+  const load = useCallback(async () => {
+    try {
+      const data = await apiGet("getCardioByDate", { date: todayKey });
+      setEntries(data || []);
+    } catch (err) { /* ignore */ }
+    finally { setLoading(false); }
+  }, [todayKey]);
+
+  useEffect(() => { load(); }, [load]);
+
+  async function handleAdd() {
+    if (!minutes || Number(minutes) <= 0) { toast("กรอกจำนวนนาทีก่อน", "error"); return; }
+    setSaving(true);
+    try {
+      await apiPost("saveCardioLog", { cardioData: { date: todayKey, type, minutes, intensity, distance, note } });
+      setMinutes(""); setDistance(""); setNote("");
+      toast("เพิ่มคาร์ดิโอเรียบร้อย", "success");
+      load();
+    } catch (err) {
+      toast("บันทึกไม่สำเร็จ: " + err.message, "error");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function handleDelete(cardioId) {
+    try {
+      await apiPost("deleteCardioLog", { cardioId });
+      setEntries((p) => p.filter((e) => e.cardioId !== cardioId));
+      toast("ลบแล้ว", "success");
+    } catch (err) {
+      toast("ลบไม่สำเร็จ: " + err.message, "error");
+    }
+  }
+
+  if (loading) return <LoadingScreen />;
+
+  return (
+    <div style={{ minHeight: "100vh", paddingBottom: 40 }}>
+      <BackHeader eyebrow="บันทึก" title="คาร์ดิโอวันนี้" onBack={onBack} />
+      <div style={{ padding: "24px 24px 0" }}>
+        <div style={{ fontSize: 11, letterSpacing: 2, color: C.textFaint, textTransform: "uppercase", marginBottom: 10 }}>ประเภท</div>
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 20 }}>
+          {CARDIO_TYPES.map((c) => (
+            <button key={c.key} onClick={() => setType(c.key)} style={{
+              padding: "10px 12px", borderRadius: 12, border: `2px solid ${type === c.key ? C.cyan : C.border}`,
+              background: type === c.key ? C.cyan + "15" : C.card, color: type === c.key ? C.cyan : C.textMuted,
+              fontSize: 12.5, fontWeight: 600, cursor: "pointer", display: "flex", alignItems: "center", gap: 6,
+            }}>
+              <span>{c.emoji}</span>{c.label}
+            </button>
+          ))}
+        </div>
+
+        <FieldGroup label="ระยะเวลา (นาที)" color={C.cyan}>
+          <NumInput value={minutes} onChange={setMinutes} placeholder="เช่น 30" />
+        </FieldGroup>
+
+        <div style={{ fontSize: 11, letterSpacing: 2, color: C.textFaint, textTransform: "uppercase", marginBottom: 10 }}>ความหนัก</div>
+        <div style={{ display: "flex", gap: 8, marginBottom: 18 }}>
+          {[["easy", "เบา"], ["moderate", "ปานกลาง"], ["hard", "หนัก"]].map(([k, label]) => (
+            <button key={k} onClick={() => setIntensity(k)} style={{
+              flex: 1, padding: "10px 0", borderRadius: 10, border: `1px solid ${intensity === k ? C.text : C.border}`,
+              background: intensity === k ? C.text : C.card, color: intensity === k ? "#fff" : C.textMuted,
+              fontSize: 13, fontWeight: 600, cursor: "pointer",
+            }}>{label}</button>
+          ))}
+        </div>
+
+        <FieldGroup label="ระยะทาง (km, ไม่บังคับ)">
+          <NumInput value={distance} onChange={setDistance} placeholder="ไม่บังคับ" step="0.1" />
+        </FieldGroup>
+        <FieldGroup label="โน้ต">
+          <input value={note} onChange={(e) => setNote(e.target.value)} placeholder="ไม่บังคับ" style={textInputStyle} />
+        </FieldGroup>
+
+        <PrimaryButton color={C.cyan} loading={saving} onClick={handleAdd}>+ เพิ่มคาร์ดิโอ</PrimaryButton>
+
+        {entries.length > 0 && (
+          <div style={{ marginTop: 28 }}>
+            <div style={{ fontSize: 11, letterSpacing: 2, color: C.textFaint, textTransform: "uppercase", marginBottom: 12 }}>วันนี้ ({entries.length})</div>
+            <Card style={{ overflow: "hidden" }}>
+              {entries.map((e, i) => {
+                const meta = CARDIO_TYPES.find((t) => t.key === e.type) || CARDIO_TYPES[5];
+                return (
+                  <div key={e.cardioId} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "14px 16px", borderBottom: i < entries.length - 1 ? `1px solid ${C.border}` : "none" }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                      <span style={{ fontSize: 18 }}>{meta.emoji}</span>
+                      <span style={{ fontSize: 14, fontWeight: 600, color: C.text }}>{meta.label}</span>
+                    </div>
+                    <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                      <span style={{ fontSize: 13, color: C.cyan, fontWeight: 700 }}>{e.minutes} นาที</span>
+                      <button onClick={() => handleDelete(e.cardioId)} style={{ background: "none", border: "none", color: C.textFaint, fontSize: 16, cursor: "pointer" }}>✕</button>
+                    </div>
+                  </div>
+                );
+              })}
+            </Card>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/* ============================================================
+ * Change Day Screen — เปลี่ยนวันซ้อมเอง
+ * ============================================================ */
+function ChangeDayScreen({ params, onBack, onSelect }) {
+  const [loading, setLoading] = useState(true);
+  const [days, setDays] = useState([]);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const data = await apiGet("getProgramDays", { programId: params.programId });
+        setDays(data);
+      } finally { setLoading(false); }
+    })();
+  }, [params]);
+
+  if (loading) return <LoadingScreen />;
+
+  return (
+    <div style={{ minHeight: "100vh" }}>
+      <BackHeader eyebrow="เปลี่ยนคิวซ้อม" title="เลือกวันซ้อม" onBack={onBack} />
+      <div style={{ padding: "20px 24px 0" }}>
+        {days.map((d) => {
+          const color = DAY_TYPE_COLOR[d.dayType] || C.text;
+          return (
+            <button key={d.dayOrder} onClick={() => onSelect(d.dayOrder)} style={{
+              width: "100%", textAlign: "left", marginBottom: 10, padding: "16px",
+              borderRadius: 14, border: `1px solid ${C.border}`, background: C.card, cursor: "pointer",
+              borderLeft: `4px solid ${color}`,
+            }}>
+              <div style={{ fontSize: 15, fontWeight: 700, color: C.text }}>{d.dayName}</div>
+              <div style={{ fontSize: 12, color: C.textMuted, marginTop: 2 }}>{d.targetMuscle} · ~{d.expectedDurationMin} นาที</div>
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+/* ============================================================ shared field helpers ============================================================ */
+const textInputStyle = {
+  width: "100%", padding: "12px 14px", borderRadius: 10, border: `1px solid ${C.border}`,
+  background: "#fff", color: C.text, fontSize: 15, fontWeight: 600, outline: "none", boxSizing: "border-box",
+};
+
+function FieldGroup({ label, color, children }) {
+  return (
+    <div style={{ marginBottom: 16 }}>
+      <div style={{ fontSize: 11, letterSpacing: 1, color: color || C.textFaint, textTransform: "uppercase", marginBottom: 6, fontWeight: 700 }}>{label}</div>
+      {children}
+    </div>
+  );
+}
+
+function NumInput({ value, onChange, placeholder, max, step }) {
+  return (
+    <input type="number" inputMode="decimal" value={value} max={max} step={step}
+      onChange={(e) => onChange(e.target.value)} placeholder={placeholder} style={textInputStyle} />
+  );
+}
+
+/* ============================================================
+ * Weekly Check-in Screen
+ * ============================================================ */
+function CheckinScreen({ onBack, toast }) {
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [weekStart, setWeekStart] = useState("");
+  const [form, setForm] = useState({
+    bodyWeightKg: "", waistCm: "", progressPhotoLink: "", averageSleepHours: "",
+    energyLevel: "", hungerLevel: "", sorenessLevel: "", painNote: "", refluxNote: "", summaryNote: "",
+  });
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const ws = await apiGet("getCurrentWeekStartDate");
+        setWeekStart(ws);
+      } finally { setLoading(false); }
+    })();
+  }, []);
+
+  function set(field, value) { setForm((p) => ({ ...p, [field]: value })); }
+
+  async function handleSave() {
+    setSaving(true);
+    try {
+      await apiPost("saveWeeklyCheckin", { checkinData: { ...form, weekStartDate: weekStart } });
+      toast("บันทึก Weekly Check-in เรียบร้อย", "success");
+      onBack();
+    } catch (err) {
+      toast("บันทึกไม่สำเร็จ: " + err.message, "error");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  if (loading) return <LoadingScreen />;
+
+  return (
+    <div style={{ minHeight: "100vh", paddingBottom: 40 }}>
+      <BackHeader eyebrow={"สัปดาห์เริ่ม " + weekStart} title="Weekly Check-in" onBack={onBack} />
+      <div style={{ padding: "24px 24px 0" }}>
+        <FieldGroup label="น้ำหนักตัว (kg)" color={C.text}>
+          <NumInput value={form.bodyWeightKg} onChange={(v) => set("bodyWeightKg", v)} placeholder="เช่น 73" step="0.1" />
+        </FieldGroup>
+        <FieldGroup label="รอบเอว (cm)" color={C.text}>
+          <NumInput value={form.waistCm} onChange={(v) => set("waistCm", v)} placeholder="เช่น 86" step="0.1" />
+        </FieldGroup>
+        <FieldGroup label="ชั่วโมงนอนเฉลี่ย">
+          <NumInput value={form.averageSleepHours} onChange={(v) => set("averageSleepHours", v)} placeholder="เช่น 6.5" step="0.1" />
+        </FieldGroup>
+        <FieldGroup label="พลังงาน (1-10)">
+          <NumInput value={form.energyLevel} onChange={(v) => set("energyLevel", v)} max={10} placeholder="ไม่บังคับ" />
+        </FieldGroup>
+        <FieldGroup label="ความหิว (1-10)">
+          <NumInput value={form.hungerLevel} onChange={(v) => set("hungerLevel", v)} max={10} placeholder="ไม่บังคับ" />
+        </FieldGroup>
+        <FieldGroup label="ปวดเมื่อยกล้ามเนื้อ (1-10)">
+          <NumInput value={form.sorenessLevel} onChange={(v) => set("sorenessLevel", v)} max={10} placeholder="ไม่บังคับ" />
+        </FieldGroup>
+        <FieldGroup label="อาการเจ็บ (สัปดาห์นี้)">
+          <textarea value={form.painNote} onChange={(e) => set("painNote", e.target.value)} rows={2}
+            placeholder="เช่น ศอกขวายังเจ็บเวลาเล่นดึง / เข่าปกติ / ไม่มีอาการเจ็บ"
+            style={{ ...textInputStyle, resize: "vertical", fontWeight: 400, fontSize: 14 }} />
+        </FieldGroup>
+        <FieldGroup label="ลิงก์รูป Progress (ไม่บังคับ)">
+          <input value={form.progressPhotoLink} onChange={(e) => set("progressPhotoLink", e.target.value)} placeholder="https://..." style={textInputStyle} />
+        </FieldGroup>
+        <FieldGroup label="อาการกรดไหลย้อน">
+          <input value={form.refluxNote} onChange={(e) => set("refluxNote", e.target.value)} placeholder="ไม่มี" style={textInputStyle} />
+        </FieldGroup>
+        <FieldGroup label="สรุปสัปดาห์นี้">
+          <textarea value={form.summaryNote} onChange={(e) => set("summaryNote", e.target.value)} rows={3}
+            style={{ ...textInputStyle, resize: "vertical", fontWeight: 400, fontSize: 14 }} />
+        </FieldGroup>
+        <PrimaryButton loading={saving} onClick={handleSave}>บันทึก Weekly Check-in</PrimaryButton>
+      </div>
+    </div>
+  );
+}
+
+/* ============================================================
+ * History Screen
+ * ============================================================ */
+function HistoryScreen({ onBack }) {
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+  const [history, setHistory] = useState(null);
+  const [days, setDays] = useState(14);
+
+  const load = useCallback(async (d) => {
+    setLoading(true);
+    setError(null);
+    try {
+      const data = await apiGet("getHistory", { days: d });
+      setHistory(data);
+    } catch (err) { setError(err.message); }
+    finally { setLoading(false); }
+  }, []);
+
+  useEffect(() => { load(days); }, [days, load]);
+
+  if (loading) return <LoadingScreen />;
+  if (error) return <div><BackHeader title="ประวัติ" onBack={onBack} /><ErrorBanner message={error} onRetry={() => load(days)} /></div>;
+
+  // group by date
+  const dateSet = new Set([
+    ...history.workouts.map((w) => w.datePerformed || w.datePlanned),
+    ...history.nutrition.map((n) => n.date),
+    ...history.cardio.map((c) => c.date),
+  ]);
+  const sortedDates = Array.from(dateSet).sort().reverse();
+
+  return (
+    <div style={{ minHeight: "100vh", paddingBottom: 40 }}>
+      <BackHeader eyebrow={days + " วันที่ผ่านมา"} title="ประวัติ" onBack={onBack}
+        right={
+          <select value={days} onChange={(e) => setDays(Number(e.target.value))} style={{ ...textInputStyle, width: "auto", padding: "6px 10px", fontSize: 12 }}>
+            <option value={7}>7 วัน</option>
+            <option value={14}>14 วัน</option>
+            <option value={30}>30 วัน</option>
+          </select>
+        }
+      />
+      <div style={{ padding: "16px 24px 0" }}>
+        {sortedDates.length === 0 && (
+          <div style={{ textAlign: "center", padding: 40, color: C.textFaint, fontSize: 13 }}>ยังไม่มีข้อมูลในช่วงนี้</div>
+        )}
+        {sortedDates.map((date) => {
+          const workout = history.workouts.find((w) => (w.datePerformed || w.datePlanned) === date);
+          const nutrition = history.nutrition.find((n) => n.date === date);
+          const cardio = history.cardio.filter((c) => c.date === date);
+          const totalCardio = cardio.reduce((s, c) => s + (Number(c.minutes) || 0), 0);
+          return (
+            <Card key={date} style={{ padding: 16, marginBottom: 12 }}>
+              <div style={{ fontSize: 12, color: C.textFaint, marginBottom: 10, fontWeight: 600 }}>{date}</div>
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                {workout && (
+                  <Pill color={STATUS_COLOR[workout.status] || C.text}>
+                    {workout.dayName} · {STATUS_LABEL[workout.status]}
+                  </Pill>
+                )}
+                {nutrition && nutrition.protein && (
+                  <Pill color={C.purple}>P {nutrition.protein}g</Pill>
+                )}
+                {totalCardio > 0 && (
+                  <Pill color={C.cyan}>🏃 {totalCardio} นาที</Pill>
+                )}
+                {!workout && !nutrition && cardio.length === 0 && (
+                  <span style={{ fontSize: 12, color: C.textFaint }}>ไม่มีข้อมูล</span>
+                )}
+              </div>
+            </Card>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function Pill({ color, children }) {
+  return (
+    <span style={{ display: "inline-block", padding: "4px 10px", borderRadius: 20, background: color + "15", color: color, fontSize: 11.5, fontWeight: 700 }}>
+      {children}
+    </span>
+  );
+}
+
+/* ============================================================
+ * Dashboard Screen
+ * ============================================================ */
+function DashboardScreen({ onBack }) {
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+  const [summary, setSummary] = useState(null);
+  const [days, setDays] = useState(7);
+
+  const load = useCallback(async (d) => {
+    setLoading(true);
+    setError(null);
+    try {
+      const data = await apiGet("getDashboardSummary", { days: d });
+      setSummary(data);
+    } catch (err) { setError(err.message); }
+    finally { setLoading(false); }
+  }, []);
+
+  useEffect(() => { load(days); }, [days, load]);
+
+  if (loading) return <LoadingScreen />;
+  if (error) return <div><BackHeader title="Dashboard" onBack={onBack} /><ErrorBanner message={error} onRetry={() => load(days)} /></div>;
+
+  const muscleEntries = Object.entries(summary.volumeByMuscle || {}).sort((a, b) => b[1] - a[1]);
+
+  return (
+    <div style={{ minHeight: "100vh", paddingBottom: 40 }}>
+      <BackHeader eyebrow={days + " วันล่าสุด"} title="Dashboard" onBack={onBack}
+        right={
+          <select value={days} onChange={(e) => setDays(Number(e.target.value))} style={{ ...textInputStyle, width: "auto", padding: "6px 10px", fontSize: 12 }}>
+            <option value={7}>7 วัน</option>
+            <option value={14}>14 วัน</option>
+            <option value={30}>30 วัน</option>
+          </select>
+        }
+      />
+      <div style={{ padding: "20px 24px 0" }}>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 10 }}>
+          <StatBox label="วันที่ซ้อม" value={summary.workoutDaysCount} sub={summary.expectedWorkouts ? `เป้า ${summary.expectedWorkouts} วัน` : ""} color={C.green} />
+          <StatBox label="คาร์ดิโอรวม" value={summary.totalCardioMin + " นาที"} color={C.cyan} />
+          <StatBox label="โปรตีนเฉลี่ย" value={summary.avgProteinG ? summary.avgProteinG + "g" : "—"} color={C.purple} />
+          <StatBox label="Calories เฉลี่ย" value={summary.avgCalories || "—"} color={C.orange} />
+        </div>
+
+        {summary.adherencePct !== null && (
+          <Card style={{ padding: 16, marginBottom: 10 }}>
+            <div style={{ fontSize: 11, color: C.textFaint, textTransform: "uppercase", letterSpacing: 1, marginBottom: 8 }}>เล่นครบตามแผน</div>
+            <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+              <div style={{ flex: 1, height: 8, background: C.border, borderRadius: 4, overflow: "hidden" }}>
+                <div style={{ height: "100%", width: Math.min(100, summary.adherencePct) + "%", background: summary.adherencePct >= 80 ? C.green : C.orange, borderRadius: 4 }} />
+              </div>
+              <div style={{ fontSize: 14, fontWeight: 800, color: C.text }}>{summary.adherencePct}%</div>
+            </div>
+          </Card>
+        )}
+
+        {(summary.latestBodyWeightKg || summary.latestWaistCm) && (
+          <Card style={{ padding: 16, marginBottom: 10 }}>
+            <div style={{ fontSize: 11, color: C.textFaint, textTransform: "uppercase", letterSpacing: 1, marginBottom: 8 }}>
+              Weekly Check-in ล่าสุด {summary.latestCheckinDate ? "(" + summary.latestCheckinDate + ")" : ""}
+            </div>
+            <div style={{ display: "flex", gap: 20 }}>
+              {summary.latestBodyWeightKg && <div><div style={{ fontSize: 18, fontWeight: 800, color: C.text }}>{summary.latestBodyWeightKg} kg</div><div style={{ fontSize: 11, color: C.textFaint }}>น้ำหนัก</div></div>}
+              {summary.latestWaistCm && <div><div style={{ fontSize: 18, fontWeight: 800, color: C.text }}>{summary.latestWaistCm} cm</div><div style={{ fontSize: 11, color: C.textFaint }}>รอบเอว</div></div>}
+            </div>
+          </Card>
+        )}
+
+        {muscleEntries.length > 0 && (
+          <Card style={{ padding: 16, marginBottom: 10 }}>
+            <div style={{ fontSize: 11, color: C.textFaint, textTransform: "uppercase", letterSpacing: 1, marginBottom: 10 }}>Volume ตามกล้ามเนื้อ (เซ็ต)</div>
+            {muscleEntries.map(([muscle, count]) => {
+              const max = muscleEntries[0][1];
+              return (
+                <div key={muscle} style={{ marginBottom: 8 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, marginBottom: 4 }}>
+                    <span style={{ color: C.textMuted, fontWeight: 600 }}>{muscle}</span>
+                    <span style={{ color: C.text, fontWeight: 700 }}>{count}</span>
+                  </div>
+                  <div style={{ height: 6, background: C.border, borderRadius: 3, overflow: "hidden" }}>
+                    <div style={{ height: "100%", width: (count / max) * 100 + "%", background: C.blue, borderRadius: 3 }} />
+                  </div>
+                </div>
+              );
+            })}
+          </Card>
+        )}
+
+        {summary.recentWorkouts && summary.recentWorkouts.length > 0 && (
+          <Card style={{ overflow: "hidden" }}>
+            <div style={{ padding: "12px 16px", fontSize: 11, color: C.textFaint, textTransform: "uppercase", letterSpacing: 1, borderBottom: `1px solid ${C.border}` }}>
+              ซ้อมล่าสุด
+            </div>
+            {summary.recentWorkouts.map((w, i) => (
+              <div key={i} style={{ padding: "12px 16px", borderBottom: i < summary.recentWorkouts.length - 1 ? `1px solid ${C.border}` : "none", display: "flex", justifyContent: "space-between" }}>
+                <span style={{ fontSize: 13, color: C.text, fontWeight: 600 }}>{w.dayName}</span>
+                <span style={{ fontSize: 12, color: STATUS_COLOR[w.status] }}>{STATUS_LABEL[w.status]}</span>
+              </div>
+            ))}
+          </Card>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function StatBox({ label, value, sub, color }) {
+  return (
+    <Card style={{ padding: 14, borderLeft: `3px solid ${color}` }}>
+      <div style={{ fontSize: 10, color: C.textFaint, textTransform: "uppercase", letterSpacing: 1, marginBottom: 6 }}>{label}</div>
+      <div style={{ fontSize: 19, fontWeight: 800, color: C.text }}>{value}</div>
+      {sub && <div style={{ fontSize: 10, color: C.textFaint, marginTop: 2 }}>{sub}</div>}
+    </Card>
+  );
+}
+
+/* ============================================================
+ * Export for ChatGPT Screen
+ * ============================================================ */
+function ExportScreen({ onBack, toast }) {
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+  const [text, setText] = useState("");
+  const [days, setDays] = useState(7);
+  const [copied, setCopied] = useState(false);
+
+  const load = useCallback(async (d) => {
+    setLoading(true);
+    setError(null);
+    setCopied(false);
+    try {
+      const result = await apiGet("exportForChatGPT", { days: d });
+      setText(result.text);
+    } catch (err) { setError(err.message); }
+    finally { setLoading(false); }
+  }, []);
+
+  useEffect(() => { load(days); }, [days, load]);
+
+  async function handleCopy() {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(true);
+      toast("คัดลอกแล้ว — ไปวางใน ChatGPT ได้เลย", "success");
+    } catch (err) {
+      toast("คัดลอกไม่สำเร็จ ลองกดเลือกข้อความเอง", "error");
+    }
+  }
+
+  return (
+    <div style={{ minHeight: "100vh", paddingBottom: 40 }}>
+      <BackHeader eyebrow="สรุปสำหรับ" title="Export for ChatGPT" onBack={onBack}
+        right={
+          <select value={days} onChange={(e) => setDays(Number(e.target.value))} style={{ ...textInputStyle, width: "auto", padding: "6px 10px", fontSize: 12 }}>
+            <option value={7}>7 วัน</option>
+            <option value={14}>14 วัน</option>
+            <option value={30}>30 วัน</option>
+          </select>
+        }
+      />
+      <div style={{ padding: "20px 24px 0" }}>
+        {loading ? (
+          <LoadingScreen label="กำลังรวบรวมข้อมูล..." />
+        ) : error ? (
+          <ErrorBanner message={error} onRetry={() => load(days)} />
+        ) : (
+          <>
+            <PrimaryButton color={copied ? C.green : C.text} onClick={handleCopy} style={{ marginBottom: 16 }}>
+              {copied ? "✓ คัดลอกแล้ว" : "📋 คัดลอกข้อความ"}
+            </PrimaryButton>
+            <Card style={{ padding: 16 }}>
+              <pre style={{
+                whiteSpace: "pre-wrap", wordBreak: "break-word", fontFamily: "inherit",
+                fontSize: 12.5, lineHeight: 1.6, color: C.text, margin: 0,
+              }}>{text}</pre>
+            </Card>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/* ============================================================
+ * Main App
+ * ============================================================ */
+function App() {
+  const [screen, setScreen] = useState("home");
+  const [screenParams, setScreenParams] = useState(null);
+  const { toasts, push, dismiss } = useToasts();
+
+  function toast(message, type) { push(message, type); }
+
+  function navigate(name, params) {
+    setScreen(name);
+    setScreenParams(params || null);
+  }
+
+  function goHome() {
+    setScreen("home");
+    setScreenParams(null);
+  }
+
+  if (!CONFIG.API_URL || CONFIG.API_URL.indexOf("PASTE_YOUR") === 0) {
+    return <SetupNotice />;
+  }
+
+  let content;
+  if (screen === "home") {
+    content = <HomeScreen onNavigate={navigate} toast={toast} />;
+  } else if (screen === "workout") {
+    content = <WorkoutScreen params={screenParams} onBack={goHome} onDone={goHome} toast={toast} />;
+  } else if (screen === "changeDay") {
+    content = <ChangeDayScreen params={screenParams} onBack={goHome} onSelect={(dayOrder) => navigate("workout", { dayOrder })} />;
+  } else if (screen === "nutrition") {
+    content = <NutritionScreen onBack={goHome} toast={toast} />;
+  } else if (screen === "cardio") {
+    content = <CardioScreen onBack={goHome} toast={toast} />;
+  } else if (screen === "checkin") {
+    content = <CheckinScreen onBack={goHome} toast={toast} />;
+  } else if (screen === "history") {
+    content = <HistoryScreen onBack={goHome} />;
+  } else if (screen === "dashboard") {
+    content = <DashboardScreen onBack={goHome} />;
+  } else if (screen === "export") {
+    content = <ExportScreen onBack={goHome} toast={toast} />;
+  } else {
+    content = <HomeScreen onNavigate={navigate} toast={toast} />;
+  }
+
+  return (
+    <div style={{ maxWidth: 430, margin: "0 auto", minHeight: "100vh", background: C.bg }}>
+      <Toast toasts={toasts} onDismiss={dismiss} />
+      {content}
+    </div>
+  );
+}
+
+const root = ReactDOM.createRoot(document.getElementById('root'));
+root.render(<App />);
+</script>
+</body>
+</html>
